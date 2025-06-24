@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 import os
 import json
 import asyncio
@@ -80,6 +82,9 @@ class Agent:
                     "/Users/jrvn-hieu/Desktop/Practical/tutorial_mcp_practice/",
                     "mcp_app/mcp-course/projects/unit3/build-mcp-server/starter",
                     "server.py")],
+                "env": {
+                    "SLACK_WEBHOOK_URL": os.getenv("SLACK_WEBHOOK_URL", "")
+                },
                 "transport": "stdio",
             }
         })

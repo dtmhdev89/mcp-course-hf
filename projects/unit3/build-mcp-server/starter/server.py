@@ -7,6 +7,7 @@ A minimal MCP server that provides tools for analyzing file changes and suggesti
 import os
 import json
 import subprocess
+import requests
 from typing import Optional
 from pathlib import Path
 
@@ -421,6 +422,50 @@ Structure your response as:
 - [Relevant documentation links]
 - [Similar issues or solutions]"""
 
+# ===== New Module 3: Slack Integration Tools =====
+
+@mcp.tool()
+async def send_slack_notification(message: str) -> str:
+    """Send a formatted notification to the team Slack channel.
+    
+    Args:
+        message: The message to send to Slack (supports Slack markdown)
+        
+    IMPORTANT: For CI failures, use format_ci_failure_alert prompt first!
+    IMPORTANT: For deployments, use format_ci_success_summary prompt first!
+    """
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return "Error: SLACK_WEBHOOK_URL environment variable not set"
+    
+    try:
+        # Prepare the payload with proper Slack formatting
+        payload = {
+            "text": message,
+            "mrkdwn": True
+        }
+        
+        # Send POST request to Slack webhook
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            timeout=10
+        )
+        
+        # Check if request was successful
+        if response.status_code == 200:
+            return "✅ Message sent successfully to Slack"
+        else:
+            return f"❌ Failed to send message. Status: {response.status_code}, Response: {response.text}"
+        
+    except requests.exceptions.Timeout:
+        return "❌ Request timed out. Check your internet connection and try again."
+    except requests.exceptions.ConnectionError:
+        return "❌ Connection error. Check your internet connection and webhook URL."
+    except Exception as e:
+        return f"❌ Error sending message: {str(e)}"
+
+
 # ===== New Module 3: Slack Formatting Prompts =====
 
 @mcp.prompt()
@@ -485,6 +530,7 @@ Slack formatting rules:
 if __name__ == "__main__":
     # Run MCP server normally
     print("Starting PR Agent MCP server...")
+    print("Make sure to set SLACK_WEBHOOK_URL environment variable")
     print("To receive GitHub webhooks, run the webhook server separately:")
     print("  python webhook_server.py")
     mcp.run()
