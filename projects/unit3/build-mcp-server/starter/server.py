@@ -28,6 +28,8 @@ DEFAULT_TEMPLATES = {
     "security.md": "Security"
 }
 
+EVENTS_FILE = Path(__file__).parent / "github_events.json"
+
 # Type mapping for PR templates
 TYPE_MAPPING = {
     "bug": "bug.md",
@@ -216,13 +218,273 @@ async def suggest_template(
             "recommended_template": selected_template,
             "reasoning": f"Based on your analysis: '{changes_summary}', this appears to be a {change_type} change.",
             "template_content": selected_template["content"],
-            "usage_hint": "Claude can help you fill out this template based on the specific changes in your PR."
+            "usage_hint": "agent can help you fill out this template based on the specific changes in your PR."
         }
         
         return json.dumps(suggestion, indent=2)
     except Exception:
         return json.dumps({"error": "Not implemented yet", "hint": "Map change_type to templates"})
 
+# ===== New Module 2: GitHub Actions Tools =====
+
+@mcp.tool()
+async def get_recent_actions_events(limit: int = 10) -> str:
+    """Get recent GitHub Actions events received via webhook.
+    
+    Args:
+        limit: Maximum number of events to return (default: 10)
+    """
+    # Read events from file
+    if not EVENTS_FILE.exists():
+        return json.dumps([])
+    
+    with open(EVENTS_FILE, 'r') as f:
+        events = json.load(f)
+    
+    # Return most recent events
+    recent = events[-limit:]
+    return json.dumps(recent, indent=2)
+
+
+@mcp.tool()
+async def get_workflow_status(workflow_name: Optional[str] = None) -> str:
+    """Get the current status of GitHub Actions workflows.
+    
+    Args:
+        workflow_name: Optional specific workflow name to filter by
+    """
+    # Read events from file
+    if not EVENTS_FILE.exists():
+        return json.dumps({"message": "No GitHub Actions events received yet"})
+    
+    with open(EVENTS_FILE, 'r') as f:
+        events = json.load(f)
+    
+    if not events:
+        return json.dumps({"message": "No GitHub Actions events received yet"})
+    
+    # Filter for workflow events
+    workflow_events = [
+        e for e in events 
+        if e.get("workflow_run") is not None
+    ]
+    
+    if workflow_name:
+        workflow_events = [
+            e for e in workflow_events
+            if e["workflow_run"].get("name") == workflow_name
+        ]
+    
+    # Group by workflow and get latest status
+    workflows = {}
+    for event in workflow_events:
+        run = event["workflow_run"]
+        name = run["name"]
+        if name not in workflows or run["updated_at"] > workflows[name]["updated_at"]:
+            workflows[name] = {
+                "name": name,
+                "status": run["status"],
+                "conclusion": run.get("conclusion"),
+                "run_number": run["run_number"],
+                "updated_at": run["updated_at"],
+                "html_url": run["html_url"]
+            }
+    
+    return json.dumps(list(workflows.values()), indent=2)
+
+
+# ===== New Module 2: MCP Prompts =====
+
+@mcp.prompt()
+async def analyze_ci_results():
+    """Analyze recent CI/CD results and provide insights."""
+    return """Please analyze the recent CI/CD results from GitHub Actions:
+
+1. First, call get_recent_actions_events() to fetch the latest CI/CD events
+2. Then call get_workflow_status() to check current workflow states
+3. Identify any failures or issues that need attention
+4. Provide actionable next steps based on the results
+
+Format your response as:
+## CI/CD Status Summary
+- **Overall Health**: [Good/Warning/Critical]
+- **Failed Workflows**: [List any failures with links]
+- **Successful Workflows**: [List recent successes]
+- **Recommendations**: [Specific actions to take]
+- **Trends**: [Any patterns you notice]"""
+
+
+@mcp.prompt()
+async def create_deployment_summary():
+    """Generate a deployment summary for team communication."""
+    return """Create a deployment summary for team communication:
+
+1. Check workflow status with get_workflow_status()
+2. Look specifically for deployment-related workflows
+3. Note the deployment outcome, timing, and any issues
+
+Format as a concise message suitable for Slack:
+
+🚀 **Deployment Update**
+- **Status**: [✅ Success / ❌ Failed / ⏳ In Progress]
+- **Environment**: [Production/Staging/Dev]
+- **Version/Commit**: [If available from workflow data]
+- **Duration**: [If available]
+- **Key Changes**: [Brief summary if available]
+- **Issues**: [Any problems encountered]
+- **Next Steps**: [Required actions if failed]
+
+Keep it brief but informative for team awareness."""
+
+
+@mcp.prompt()
+async def generate_pr_status_report():
+    """Generate a comprehensive PR status report including CI/CD results."""
+    return """Generate a comprehensive PR status report:
+
+1. Use analyze_file_changes() to understand what changed
+2. Use get_workflow_status() to check CI/CD status
+3. Use suggest_template() to recommend the appropriate PR template
+4. Combine all information into a cohesive report
+
+Create a detailed report with:
+
+## 📋 PR Status Report
+
+### 📝 Code Changes
+- **Files Modified**: [Count by type - .py, .js, etc.]
+- **Change Type**: [Feature/Bug/Refactor/etc.]
+- **Impact Assessment**: [High/Medium/Low with reasoning]
+- **Key Changes**: [Bullet points of main modifications]
+
+### 🔄 CI/CD Status
+- **All Checks**: [✅ Passing / ❌ Failing / ⏳ Running]
+- **Test Results**: [Pass rate, failed tests if any]
+- **Build Status**: [Success/Failed with details]
+- **Code Quality**: [Linting, coverage if available]
+
+### 📌 Recommendations
+- **PR Template**: [Suggested template and why]
+- **Next Steps**: [What needs to happen before merge]
+- **Reviewers**: [Suggested reviewers based on files changed]
+
+### ⚠️ Risks & Considerations
+- [Any deployment risks]
+- [Breaking changes]
+- [Dependencies affected]"""
+
+
+@mcp.prompt()
+async def troubleshoot_workflow_failure():
+    """Help troubleshoot a failing GitHub Actions workflow."""
+    return """Help troubleshoot failing GitHub Actions workflows:
+
+1. Use get_recent_actions_events() to find recent failures
+2. Use get_workflow_status() to see which workflows are failing
+3. Analyze the failure patterns and timing
+4. Provide systematic troubleshooting steps
+
+Structure your response as:
+
+## 🔧 Workflow Troubleshooting Guide
+
+### ❌ Failed Workflow Details
+- **Workflow Name**: [Name of failing workflow]
+- **Failure Type**: [Test/Build/Deploy/Lint]
+- **First Failed**: [When did it start failing]
+- **Failure Rate**: [Intermittent or consistent]
+
+### 🔍 Diagnostic Information
+- **Error Patterns**: [Common error messages or symptoms]
+- **Recent Changes**: [What changed before failures started]
+- **Dependencies**: [External services or resources involved]
+
+### 💡 Possible Causes (ordered by likelihood)
+1. **[Most Likely]**: [Description and why]
+2. **[Likely]**: [Description and why]
+3. **[Possible]**: [Description and why]
+
+### ✅ Suggested Fixes
+**Immediate Actions:**
+- [ ] [Quick fix to try first]
+- [ ] [Second quick fix]
+
+**Investigation Steps:**
+- [ ] [How to gather more info]
+- [ ] [Logs or data to check]
+
+**Long-term Solutions:**
+- [ ] [Preventive measure]
+- [ ] [Process improvement]
+
+### 📚 Resources
+- [Relevant documentation links]
+- [Similar issues or solutions]"""
+
+# ===== New Module 3: Slack Formatting Prompts =====
+
+@mcp.prompt()
+async def format_ci_failure_alert():
+    """Create a Slack alert for CI/CD failures with rich formatting."""
+    return """Format this GitHub Actions failure as a Slack message using ONLY Slack markdown syntax:
+
+:rotating_light: *CI Failure Alert* :rotating_light:
+
+A CI workflow has failed:
+*Workflow*: workflow_name
+*Branch*: branch_name
+*Status*: Failed
+*View Details*: <https://github.com/test/repo/actions/runs/123|View Logs>
+
+Please check the logs and address any issues.
+
+CRITICAL: Use EXACT Slack link format: <https://full-url|Link Text>
+Examples:
+- CORRECT: <https://github.com/user/repo|Repository>
+- WRONG: [Repository](https://github.com/user/repo)
+- WRONG: https://github.com/user/repo
+
+Slack formatting rules:
+- *text* for bold (NOT **text**)
+- `text` for code
+- > text for quotes
+- Use simple bullet format without special characters
+- :emoji_name: for emojis"""
+
+
+@mcp.prompt()
+async def format_ci_success_summary():
+    """Create a Slack message celebrating successful deployments."""
+    return """Format this successful GitHub Actions run as a Slack message using ONLY Slack markdown syntax:
+
+:white_check_mark: *Deployment Successful* :white_check_mark:
+
+Deployment completed successfully for [Repository Name]
+
+*Changes:*
+- Key feature or fix 1
+- Key feature or fix 2
+
+*Links:*
+<https://github.com/user/repo|View Changes>
+
+CRITICAL: Use EXACT Slack link format: <https://full-url|Link Text>
+Examples:
+- CORRECT: <https://github.com/user/repo|Repository>
+- WRONG: [Repository](https://github.com/user/repo)
+- WRONG: https://github.com/user/repo
+
+Slack formatting rules:
+- *text* for bold (NOT **text**)
+- `text` for code
+- > text for quotes
+- Use simple bullet format with - or *
+- :emoji_name: for emojis"""
+
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    # Run MCP server normally
+    print("Starting PR Agent MCP server...")
+    print("To receive GitHub webhooks, run the webhook server separately:")
+    print("  python webhook_server.py")
+    mcp.run()
